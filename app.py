@@ -71,7 +71,7 @@ def find_potrace() -> str | None:
     p = resource_path(r"bin\potrace.exe")
     if Path(p).exists():
         return p
-   return find_potrace()
+    return find_potrace()
 
 
     
