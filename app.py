@@ -100,25 +100,52 @@ def list_images(path: Path) -> List[Path]:
 
 
 def pad_square_pillow(in_path: Path, out_path: Path, size: int, bg_mode: str) -> None:
-    with Image.open(in_path) as im:
-        im = im.convert("RGBA")
-        im.thumbnail((size, size), Image.LANCZOS)
+    img = Image.open(in_path)
 
-        if bg_mode == "transparent":
-            bg = (0, 0, 0, 0)
-        elif bg_mode == "white":
-            bg = (255, 255, 255, 255)
-        elif bg_mode == "black":
-            bg = (0, 0, 0, 255)
+    # Normalize image mode based on requested background behavior
+    bg_mode = (bg_mode or "").lower().strip()
+    if bg_mode in ("transparent", "alpha", "none"):
+        # keep alpha
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        bg = (0, 0, 0, 0)
+        canvas_mode = "RGBA"
+    else:
+        # solid background: kill alpha
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        if bg_mode in ("black", "0", "dark"):
+            bg = (0, 0, 0)
         else:
-            raise ValueError("bg must be: transparent | white | black")
+            # default white
+            bg = (255, 255, 255)
+        canvas_mode = "RGB"
 
-        canvas = Image.new("RGBA", (size, size), bg)
-        x = (size - im.width) // 2
-        y = (size - im.height) // 2
-        canvas.paste(im, (x, y), im)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        canvas.save(out_path, "PNG", optimize=True)
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        raise ValueError(f"Invalid image size: {img.size} for {in_path}")
+
+    # Scale to fit within the square while keeping aspect ratio
+    scale = min(size / w, size / h)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+
+    resample = getattr(Image, "Resampling", Image).LANCZOS
+    resized = img.resize((new_w, new_h), resample)
+
+    # Create square canvas and paste centered
+    canvas = Image.new(canvas_mode, (size, size), bg)
+    x = (size - new_w) // 2
+    y = (size - new_h) // 2
+
+    if canvas_mode == "RGBA" and resized.mode == "RGBA":
+        canvas.paste(resized, (x, y), resized)
+    else:
+        canvas.paste(resized, (x, y))
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Save PNG; if RGB, it will not be transparent
+    canvas.save(out_path, format="PNG")
 
 
 def preprocess_magick(
