@@ -98,34 +98,28 @@ def list_images(path: Path) -> List[Path]:
     files.sort()
     return files
 
-
 def pad_square_pillow(in_path: Path, out_path: Path, size: int, bg_mode: str) -> None:
+    bg_mode = (bg_mode or "white").strip().lower()
+
     img = Image.open(in_path)
 
-    # Normalize image mode based on requested background behavior
-    bg_mode = (bg_mode or "").lower().strip()
+    # Background handling
     if bg_mode in ("transparent", "alpha", "none"):
-        # keep alpha
         if img.mode != "RGBA":
             img = img.convert("RGBA")
-        bg = (0, 0, 0, 0)
         canvas_mode = "RGBA"
+        bg = (0, 0, 0, 0)
     else:
-        # solid background: kill alpha
         if img.mode != "RGB":
             img = img.convert("RGB")
-        if bg_mode in ("black", "0", "dark"):
-            bg = (0, 0, 0)
-        else:
-            # default white
-            bg = (255, 255, 255)
         canvas_mode = "RGB"
+        bg = (0, 0, 0) if bg_mode == "black" else (255, 255, 255)
 
     w, h = img.size
     if w <= 0 or h <= 0:
-        raise ValueError(f"Invalid image size: {img.size} for {in_path}")
+        raise ValueError(f"Invalid image size {img.size} for {in_path}")
 
-    # Scale to fit within the square while keeping aspect ratio
+    # Scale to fit within square (no squish)
     scale = min(size / w, size / h)
     new_w = max(1, int(round(w * scale)))
     new_h = max(1, int(round(h * scale)))
@@ -133,20 +127,22 @@ def pad_square_pillow(in_path: Path, out_path: Path, size: int, bg_mode: str) ->
     resample = getattr(Image, "Resampling", Image).LANCZOS
     resized = img.resize((new_w, new_h), resample)
 
-    # Create square canvas and paste centered
     canvas = Image.new(canvas_mode, (size, size), bg)
     x = (size - new_w) // 2
     y = (size - new_h) // 2
 
-    if canvas_mode == "RGBA" and resized.mode == "RGBA":
+    if canvas_mode == "RGBA":
         canvas.paste(resized, (x, y), resized)
     else:
         canvas.paste(resized, (x, y))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Save PNG; if RGB, it will not be transparent
     canvas.save(out_path, format="PNG")
 
+    # hard proof
+    chk = Image.open(out_path)
+    if chk.size != (size, size):
+        raise RuntimeError(f"PAD FAILED: wrote {chk.size}, expected {(size, size)} -> {out_path}")
 
 def preprocess_magick(
     magick_exe: str,
