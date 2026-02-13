@@ -71,7 +71,8 @@ def find_potrace() -> str | None:
     p = resource_path(r"bin\potrace.exe")
     if Path(p).exists():
         return p
-    return shutil.potrace = find_potrace()
+   return find_potrace()
+
 
     
 def run_cmd(args: List[str]) -> None:
