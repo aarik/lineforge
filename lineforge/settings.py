@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 @dataclass
 class Settings:
+    # A) preprocess
     do_preprocess: bool = True
     grayscale: bool = True
     auto_level: bool = True
@@ -14,16 +15,21 @@ class Settings:
     do_threshold: bool = False
     threshold_pct: int = 45
 
+    # B) pad
     do_pad: bool = True
     pad_size: int = 512
-    pad_bg: str = "white"
-    pad_out_fmt: str = "jpg"
+    pad_bg: str = "white"          # "white" or "black"
+    pad_out_fmt: str = "jpg"       # "jpg" or "png"
     jpeg_quality: int = 95
 
+    # C) trace (potrace)
     do_trace: bool = True
+    trace_cutoff_pct: int = 45
+    trace_invert: bool = False
     potrace_turdsize: int = 8
     potrace_smooth: bool = True
 
+    # D) export
     do_export: bool = True
     export_width: int = 512
     export_area_drawing: bool = True

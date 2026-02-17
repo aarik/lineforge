@@ -11,163 +11,161 @@ from ..stages.preprocess import preprocess_magick
 from ..stages.pad import pad_square
 from ..stages.trace import trace_to_svg
 from ..stages.export import export_svg_to_png
-from ..pipeline import run_all
+
+
+def run_all(input_path: Path, output_root: Path, s: Settings, log) -> None:
+    """Run A->D in order, using the same logic as the GUI buttons."""
+    files = list_images(input_path)
+    if not files:
+        raise RuntimeError("No supported images found.")
+
+    # A: preprocess
+    if s.do_preprocess:
+        magick = find_magick()
+        if not magick:
+            raise RuntimeError("ImageMagick 'magick' not found on PATH.")
+        d1 = output_root / "01_preprocessed"
+        d1.mkdir(parents=True, exist_ok=True)
+        for src in files:
+            dst = d1 / (src.stem + ".png")
+            preprocess_magick(
+                magick, src, dst,
+                s.grayscale, s.auto_level, s.contrast_stretch,
+                s.cs_black, s.cs_white, s.median, s.blur,
+                s.negate, s.do_threshold, s.threshold_pct
+            )
+        files = list_images(d1)
+
+    # B: pad
+    if s.do_pad:
+        d2 = output_root / "02_padded"
+        d2.mkdir(parents=True, exist_ok=True)
+        for src in files:
+            out_base = d2 / src.stem
+            pad_square(src, out_base, s.pad_size, s.pad_bg, s.pad_out_fmt, s.jpeg_quality)
+        files = list_images(d2)
+
+    # C: trace
+    if s.do_trace:
+        magick = find_magick()
+        if not magick:
+            raise RuntimeError("ImageMagick 'magick' not found on PATH (needed for trace PBM).")
+        potrace = find_potrace()
+        if not potrace:
+            raise RuntimeError("potrace not found. Put potrace.exe in bin\\ or install potrace.")
+        d3 = output_root / "03_svg"
+        d3.mkdir(parents=True, exist_ok=True)
+        for src in files:
+            dst = d3 / (src.stem + ".svg")
+            trace_to_svg(
+                magick, potrace, src, dst,
+                s.trace_cutoff_pct, s.trace_invert,
+                s.potrace_turdsize, s.potrace_smooth
+            )
+        files = sorted(d3.glob("*.svg"))
+
+    # D: export
+    if s.do_export:
+        inkscape = find_inkscape()
+        if not inkscape:
+            raise RuntimeError("Inkscape not found on PATH (needed for export).")
+        d4 = output_root / "04_export_png"
+        d4.mkdir(parents=True, exist_ok=True)
+        for svg in files:
+            dst = d4 / (Path(svg).stem + ".png")
+            export_svg_to_png(inkscape, Path(svg), dst, s.export_width, s.export_area_drawing)
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+
         self.title("LineForge")
+        self.geometry("980x720")
+        self.minsize(900, 650)
 
         self.s = Settings()
 
-        self._log_file_path = None
-        self._log_fh = None
+        self.var_in = tk.StringVar(value=str(Path.cwd()))
+        self.var_out = tk.StringVar(value=str(Path.cwd() / "output"))
 
-        top = tk.Frame(self)
-        top.pack(padx=10, pady=10, fill="x")
+        self.log_dir = Path.cwd() / "logs"
+        self.log_dir.mkdir(exist_ok=True)
+        self.current_log_file = None
 
-        tk.Label(top, text="Input folder").grid(row=0, column=0, sticky="w")
-        self.e_in = tk.Entry(top, width=70)
-        self.e_in.insert(0, str(Path.cwd()))
-        self.e_in.grid(row=0, column=1, padx=6, sticky="we")
+        self._build_ui()
 
-        tk.Label(top, text="Output folder").grid(row=1, column=0, sticky="w")
-        self.e_out = tk.Entry(top, width=70)
-        self.e_out.insert(0, str(Path.cwd() / "output"))
-        self.e_out.grid(row=1, column=1, padx=6, sticky="we")
+    def _build_ui(self):
+        frm_top = tk.Frame(self)
+        frm_top.pack(fill="x", padx=10, pady=8)
 
-        top.columnconfigure(1, weight=1)
+        tk.Label(frm_top, text="Input folder / file:").grid(row=0, column=0, sticky="w")
+        tk.Entry(frm_top, textvariable=self.var_in, width=80).grid(row=0, column=1, sticky="we", padx=6)
 
-        # Pad controls (most used)
-        pad = tk.LabelFrame(self, text="B: Pad settings")
-        pad.pack(padx=10, pady=(0, 10), fill="x")
+        tk.Label(frm_top, text="Output folder:").grid(row=1, column=0, sticky="w")
+        tk.Entry(frm_top, textvariable=self.var_out, width=80).grid(row=1, column=1, sticky="we", padx=6)
 
-        self.v_size = tk.IntVar(value=self.s.pad_size)
-        self.v_bg = tk.StringVar(value=self.s.pad_bg)
-        self.v_fmt = tk.StringVar(value=self.s.pad_out_fmt)
-        self.v_q = tk.IntVar(value=self.s.jpeg_quality)
+        frm_top.columnconfigure(1, weight=1)
 
-        tk.Label(pad, text="Size").grid(row=0, column=0, sticky="w")
-        tk.Entry(pad, textvariable=self.v_size, width=8).grid(row=0, column=1, padx=6, sticky="w")
+        frm_btns = tk.Frame(self)
+        frm_btns.pack(fill="x", padx=10, pady=6)
 
-        tk.Label(pad, text="Background").grid(row=0, column=2, sticky="w")
-        tk.OptionMenu(pad, self.v_bg, "white", "black", "transparent").grid(row=0, column=3, padx=6, sticky="w")
+        tk.Button(frm_btns, text="A) Preprocess", command=self.run_a, width=18).pack(side="left", padx=4)
+        tk.Button(frm_btns, text="B) Pad", command=self.run_b, width=18).pack(side="left", padx=4)
+        tk.Button(frm_btns, text="C) Trace → SVG", command=self.run_c, width=18).pack(side="left", padx=4)
+        tk.Button(frm_btns, text="D) Export → PNG", command=self.run_d, width=18).pack(side="left", padx=4)
+        tk.Button(frm_btns, text="Run ALL", command=self.run_all_clicked, width=18).pack(side="left", padx=8)
 
-        tk.Label(pad, text="Out format").grid(row=0, column=4, sticky="w")
-        tk.OptionMenu(pad, self.v_fmt, "jpg", "png").grid(row=0, column=5, padx=6, sticky="w")
+        frm_info = tk.Frame(self)
+        frm_info.pack(fill="x", padx=10, pady=6)
 
-        tk.Label(pad, text="JPEG quality").grid(row=0, column=6, sticky="w")
-        tk.Entry(pad, textvariable=self.v_q, width=6).grid(row=0, column=7, padx=6, sticky="w")
-
-        # Buttons
-        btn = tk.Frame(self)
-        btn.pack(padx=10, pady=(0, 10), fill="x")
-
-        tk.Button(btn, text="Run ALL (A->D)", command=self.run_all_clicked).pack(side="left")
-        tk.Button(btn, text="Run A: Preprocess", command=self.run_a).pack(side="left", padx=6)
-        tk.Button(btn, text="Run B: Pad", command=self.run_b).pack(side="left", padx=6)
-        tk.Button(btn, text="Run C: Trace", command=self.run_c).pack(side="left", padx=6)
-        tk.Button(btn, text="Run D: Export", command=self.run_d).pack(side="left", padx=6)
-
-        tk.Button(btn, text="Open output folder", command=self.open_output_folder).pack(side="left", padx=10)
-        tk.Button(btn, text="Open last log", command=self.open_last_log).pack(side="left")
-
-        tk.Button(btn, text="Clear log", command=self.clear).pack(side="right")
-
-        self.log = tk.Text(self, height=20, width=110)
-        self.log.pack(padx=10, pady=(0, 10), fill="both", expand=True)
-
-        self.start_new_log_session()
-        self.write(
-            "Ready.\n"
-            "Outputs:\n"
+        txt = (
+            "Stages:\n"
             "  A -> output\\01_preprocessed\n"
             "  B -> output\\02_padded\n"
             "  C -> output\\03_svg\n"
             "  D -> output\\04_export_png\n"
         )
+        tk.Label(frm_info, text=txt, justify="left").pack(anchor="w")
 
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        frm_log = tk.Frame(self)
+        frm_log.pack(fill="both", expand=True, padx=10, pady=8)
 
-    # ---------- logging ----------
-    def start_new_log_session(self):
-        self.close_log_session()
+        self.txt_log = tk.Text(frm_log, wrap="word")
+        self.txt_log.pack(side="left", fill="both", expand=True)
 
-        logs_dir = Path.cwd() / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._log_file_path = logs_dir / f"lineforge_{stamp}.log"
-        self._log_fh = open(self._log_file_path, "a", encoding="utf-8")
+        scroll = tk.Scrollbar(frm_log, command=self.txt_log.yview)
+        scroll.pack(side="right", fill="y")
+        self.txt_log.configure(yscrollcommand=scroll.set)
 
-    def close_log_session(self):
-        try:
-            if self._log_fh:
-                self._log_fh.flush()
-                self._log_fh.close()
-        except Exception:
-            pass
-        self._log_fh = None
+        frm_bottom = tk.Frame(self)
+        frm_bottom.pack(fill="x", padx=10, pady=8)
 
-    def write(self, msg: str):
-        self.log.insert("end", msg)
-        self.log.see("end")
-        self.update_idletasks()
-
-        try:
-            if self._log_fh:
-                self._log_fh.write(msg)
-                self._log_fh.flush()
-        except Exception:
-            pass
-
-    # ---------- helpers ----------
-    def clear(self):
-        self.log.delete("1.0", "end")
+        tk.Button(frm_bottom, text="Quit", command=self.quit_app, width=12).pack(side="right")
 
     def paths(self):
-        inp = Path(self.e_in.get().strip())
-        out = Path(self.e_out.get().strip())
-        if not inp.exists():
-            raise FileNotFoundError(f"Input path not found: {inp}")
+        inp = Path(self.var_in.get()).expanduser()
+        out = Path(self.var_out.get()).expanduser()
         out.mkdir(parents=True, exist_ok=True)
         return inp, out
 
-    def sync(self):
-        self.s.pad_size = int(self.v_size.get())
-        self.s.pad_bg = self.v_bg.get().strip().lower()
-        self.s.pad_out_fmt = self.v_fmt.get().strip().lower()
-        self.s.jpeg_quality = int(self.v_q.get())
+    def write(self, msg: str):
+        self.txt_log.insert("end", msg)
+        self.txt_log.see("end")
+        self.txt_log.update_idletasks()
+        if self.current_log_file:
+            with open(self.current_log_file, "a", encoding="utf-8") as f:
+                f.write(msg)
 
-    def open_output_folder(self):
-        try:
-            out = Path(self.e_out.get().strip()).resolve()
-            out.mkdir(parents=True, exist_ok=True)
-            os.startfile(str(out))
-        except Exception as e:
-            messagebox.showerror("Open output folder failed", str(e))
+    def start_new_log_session(self):
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.current_log_file = str(self.log_dir / f"lineforge_{ts}.log")
+        self.write(f"\n--- Log session: {self.current_log_file} ---\n")
 
-    def open_last_log(self):
-        try:
-            if self._log_file_path and self._log_file_path.exists():
-                os.startfile(str(self._log_file_path.resolve()))
-                return
+    def close_log_session(self):
+        self.current_log_file = None
 
-            logs_dir = (Path.cwd() / "logs")
-            if not logs_dir.exists():
-                messagebox.showinfo("Open last log", "No logs folder yet.")
-                return
-
-            logs = sorted(logs_dir.glob("lineforge_*.log"))
-            if not logs:
-                messagebox.showinfo("Open last log", "No log files found yet.")
-                return
-
-            os.startfile(str(logs[-1].resolve()))
-        except Exception as e:
-            messagebox.showerror("Open last log failed", str(e))
-
-    def on_close(self):
+    def quit_app(self):
         self.close_log_session()
         self.destroy()
 
