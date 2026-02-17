@@ -1,5 +1,24 @@
 # LineForge
 
+LineForge is currently Windows only. A Linux build is on the way.
+
+To build lineforge    
+
+```
+git clone https://github.com/aarik/lineforge.git
+cd lineforge
+```
+
+Then run
+
+```
+powershell -ExecutionPolicy Bypass -File .\build_release.ps1
+```
+
+The .EXE will output at dist_release/LineForge.exe
+
+
+---
 LineForge is a modular batch image processing pipeline for preparing raster artwork for tracing, icon refinement, and dataset cleanup.
 
 It provides:
@@ -51,10 +70,7 @@ Options:
 - Negate
 - Threshold (slider)
 
-Output:
-```
-output/01_preprocessed
-```
+Outputs to output/01_preprocessed
 
 ---
 
@@ -64,10 +80,7 @@ output/01_preprocessed
 - Output format: PNG or JPG
 - JPEG quality control
 
-Output:
-```
-output/02_padded
-```
+Outputs to output/02_padded
 
 ---
 
@@ -81,10 +94,7 @@ Options:
 - Smooth toggle  
   (Smoothing is default; disabling applies `--flat`.)
 
-Output:
-```
-output/03_svg
-```
+Outputs to output/03_svg
 
 ---
 
@@ -95,10 +105,7 @@ Options:
 - Export width
 - Area: drawing
 
-Output:
-```
-output/04_export_png
-```
+Outputs to output/04_export_png
 
 ---
 
@@ -110,15 +117,7 @@ When enabled:
 2. Frames are processed through selected stages.
 3. Processed frames are rebuilt into a new `.ico`.
 
-Final icons:
-```
-output/05_ico
-```
-
-Temporary extracted frames:
-```
-output/_ico_frames
-```
+Final icons land in output/05_ico and temporary extracted frames can be found in output/_ico_frames
 
 Recommended icon workflow:
 - Enable ICO handling
@@ -156,24 +155,7 @@ ImageMagick and Inkscape must be installed separately.
 
 ---
 
-## Build (Windows Release)
 
-```
-git clone https://github.com/aarik/lineforge.git
-cd lineforge
-```
-Then run
-
-```
-powershell -ExecutionPolicy Bypass -File .\build_release.ps1
-```
-
-Output:
-```
-dist_release/LineForge.exe
-```
-
----
 
 ## Logs
 
