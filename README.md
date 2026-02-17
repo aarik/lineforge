@@ -1,76 +1,183 @@
 # LineForge
 
-LineForge is a plain Windows GUI for prepping monochrome / line-art datasets for ML training.
+LineForge is a modular batch image processing pipeline for preparing raster artwork for tracing, icon refinement, and dataset cleanup.
 
-It batch-processes images to reduce intrusive artifacts (specks, halos, compression junk), standardizes them (pad/resize), optionally traces them to SVG, and optionally exports the SVGs back to PNG for consistent training inputs.
+It provides:
 
-## What it does
+- Image preprocessing (ImageMagick)
+- Square padding / resizing
+- Raster → SVG tracing (Potrace)
+- SVG → PNG export (Inkscape)
+- ICO round-trip support (extract → process → rebuild)
 
-Given an input folder (or a single image), LineForge can run this pipeline:
+---
 
-1) **Preprocess (ImageMagick)**
-   - flattens alpha
-   - optional grayscale
-   - optional auto-level
-   - optional contrast-stretch
-   - optional median denoise
-   - optional blur
-   - optional invert
-   - optional threshold (bilevel)
+## Supported Input
 
-2) **Pad/Resize (Pillow)**
-   - letterbox to a square canvas (ex: 512×512)
-   - background: **white / black / transparent**
-   - output: **JPG or PNG** (JPG recommended to avoid transparency issues)
-   - JPEG quality control
+Formats:
+- PNG
+- JPG / JPEG
+- WEBP
+- BMP
+- TIFF
+- ICO (optional handling)
 
-3) **Trace to SVG (Potrace)**
-   - threshold-to-PBM + potrace SVG
-   - speck removal (turdsize)
-   - optional curve smoothing
-   - optional invert / cutoff adjustments
+Input sources:
+- Single file
+- Folder
+- Folder (recursive)
 
-4) **Export SVG → PNG (Inkscape CLI)**
-   - export at a consistent width
-   - optional crop-to-drawing-area
+The UI displays:
 
-Outputs are written into numbered folders under your chosen output directory:
-- `01_preprocessed`
-- `02_padded`
-- `03_svg`
-- `04_export_png`
+`Found: X inputs`
 
-## UI usage
+If zero files are found, enable recursive mode when selecting a parent folder.
 
-- **Run A: Preprocess** writes to `01_preprocessed`
-- **Run B: Pad** writes to `02_padded`
-- **Run C: Trace** writes to `03_svg`
-- **Run D: Export** writes to `04_export_png`
-- **Run ALL (A→D)** runs the full pipeline in order
-- **Open output folder** opens the output directory in Explorer
-- **Open last log** opens the most recent run log
+---
 
-Logs are saved to:
-- `.\logs\lineforge_YYYYMMDD_HHMMSS.log`
+## Pipeline Stages
 
-### Dependencies
+Each stage can be enabled or disabled independently.
 
-LineForge uses:
-- **Potrace** (bundled in this repo under `bin/potrace.exe`)
-- **ImageMagick** (must be installed and available on PATH as `magick`)
-- **Inkscape** (must be installed and available on PATH as `inkscape`)
+### A) Preprocess
+Uses ImageMagick.
 
-If a dependency is missing, the UI will tell you exactly which one.
+Options:
+- Grayscale
+- Auto-level
+- Contrast stretch
+- Median filter
+- Blur
+- Negate
+- Threshold (slider)
 
+Output:
+```
+output/01_preprocessed
+```
 
-## Quick Start(Python)
+---
 
-pip install -r requirements.txt
-python main.py
+### B) Pad
+- Square resize
+- Background: white / black / transparent
+- Output format: PNG or JPG
+- JPEG quality control
 
+Output:
+```
+output/02_padded
+```
 
-## Build (developer)
+---
 
-To build the release version of the app (single EXE):
+### C) Trace → SVG
+Uses Potrace.
+
+Options:
+- Threshold cutoff
+- Invert before threshold
+- Turdsize
+- Smooth toggle  
+  (Smoothing is default; disabling applies `--flat`.)
+
+Output:
+```
+output/03_svg
+```
+
+---
+
+### D) Export → PNG
+Uses Inkscape.
+
+Options:
+- Export width
+- Area: drawing
+
+Output:
+```
+output/04_export_png
+```
+
+---
+
+## ICO Processing (Optional)
+
+When enabled:
+
+1. `.ico` files are extracted into PNG frames.
+2. Frames are processed through selected stages.
+3. Processed frames are rebuilt into a new `.ico`.
+
+Final icons:
+```
+output/05_ico
+```
+
+Temporary extracted frames:
+```
+output/_ico_frames
+```
+
+Recommended icon workflow:
+- Enable ICO handling
+- Enable Preprocess + Pad
+- Disable Trace (unless vectorizing)
+- Use PNG output
+- Export width 256
+
+---
+
+## Output Structure
+
+```
+output/
+├── 01_preprocessed/
+├── 02_padded/
+├── 03_svg/
+├── 04_export_png/
+├── 05_ico/        (if enabled)
+└── _ico_frames/   (temporary)
+```
+
+---
+
+## Dependencies
+
+Must be available on PATH:
+
+- ImageMagick (`magick`)
+- Potrace
+- Inkscape
+
+`potrace.exe` is bundled in release builds.
+ImageMagick and Inkscape must be installed separately.
+
+---
+
+## Build (Windows Release)
+
+```
 powershell -ExecutionPolicy Bypass -File .\build_release.ps1
+```
 
+Output:
+```
+dist_release/LineForge.exe
+```
+
+---
+
+## Logs
+
+Each run creates a timestamped log file in:
+
+```
+logs/
+```
+
+The UI provides:
+- Open output folder
+- Open last log
+- Clear log
