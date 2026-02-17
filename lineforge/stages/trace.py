@@ -16,11 +16,13 @@ def trace_to_svg(
     turdsize: int = 8,
     smooth: bool = True,
 ) -> Path:
-    """Trace a raster image to SVG using ImageMagick -> PBM then Potrace.
+    """
+    Trace a raster image to SVG using ImageMagick -> PBM then Potrace.
 
-    - Converts the image to a 1-bit PBM at a given threshold cutoff.
-    - Optionally inverts before thresholding.
-    - Runs potrace to produce an SVG.
+    IMPORTANT:
+    - Many potrace builds do NOT support a '--smooth' flag.
+    - Smoothing/curve fitting is generally the default.
+    - When smooth=False, we use '--flat' (common potrace flag) to reduce curve fitting.
 
     Args:
         magick: path to ImageMagick CLI ('magick')
@@ -30,7 +32,7 @@ def trace_to_svg(
         cutoff_pct: threshold cutoff percent (0..100)
         invert: invert colors before threshold
         turdsize: speck removal (potrace --turdsize)
-        smooth: curve smoothing (potrace --smooth)
+        smooth: if False, pass '--flat' to reduce smoothing (no curves)
     """
     src = Path(src)
     dst = Path(dst)
@@ -46,7 +48,7 @@ def trace_to_svg(
         td_path = Path(td)
         pbm = td_path / (src.stem + ".pbm")
 
-        # Build PBM (1-bit) for potrace
+        # 1) Make a clean 1-bit PBM for potrace
         args = [magick, str(src)]
         args += ["-background", "white", "-alpha", "remove", "-alpha", "off"]
         args += ["-colorspace", "Gray"]
@@ -57,7 +59,7 @@ def trace_to_svg(
 
         run_cmd(args)
 
-        # Potrace to SVG
+        # 2) Potrace -> SVG
         pargs = [
             potrace,
             str(pbm),
@@ -67,10 +69,10 @@ def trace_to_svg(
             "--turdsize",
             str(int(turdsize)),
         ]
-        if smooth:
-            pargs.append("--smooth")
-        else:
-            pargs.append("--no-smooth")
+
+        # No '--smooth' (not standard). If user wants "less smoothing", use '--flat'.
+        if not smooth:
+            pargs.append("--flat")
 
         run_cmd(pargs)
 

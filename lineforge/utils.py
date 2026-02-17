@@ -3,7 +3,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, List
 
-IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".ico"}
 
 
 def which(cmd: str) -> Optional[str]:

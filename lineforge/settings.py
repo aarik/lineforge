@@ -4,6 +4,7 @@ from dataclasses import dataclass
 class Settings:
     # Input behavior
     input_recursive: bool = False
+    handle_ico: bool = False   # NEW: extract ICO frames and rebuild after processing
 
     # A) preprocess
     do_preprocess: bool = True
@@ -21,8 +22,8 @@ class Settings:
     # B) pad
     do_pad: bool = True
     pad_size: int = 512
-    pad_bg: str = "white"          # white / black / transparent (transparent treated as white unless you add alpha path)
-    pad_out_fmt: str = "jpg"       # jpg or png
+    pad_bg: str = "white"
+    pad_out_fmt: str = "png"       # for icons, png is usually safer than jpg
     jpeg_quality: int = 95
 
     # C) trace
