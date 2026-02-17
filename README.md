@@ -159,6 +159,12 @@ ImageMagick and Inkscape must be installed separately.
 ## Build (Windows Release)
 
 ```
+git clone https://github.com/aarik/lineforge.git
+cd lineforge
+```
+Then run
+
+```
 powershell -ExecutionPolicy Bypass -File .\build_release.ps1
 ```
 
