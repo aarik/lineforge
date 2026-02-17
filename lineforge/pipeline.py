@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from .utils import list_images
 from .deps import find_magick, find_potrace, find_inkscape
@@ -14,10 +14,6 @@ from .stages.icon import split_ico_to_pngs, rebuild_ico_from_pngs
 
 
 def _choose_last_raster_dir(output_root: Path, s: Settings) -> Path:
-    """
-    For icon rebuild: use the last stage that definitely produced raster files.
-    Priority: D export PNG -> B padded -> A preprocessed
-    """
     if s.do_export and (output_root / "04_export_png").exists():
         return output_root / "04_export_png"
     if s.do_pad and (output_root / "02_padded").exists():
@@ -38,14 +34,13 @@ def run_all(input_path: Path, output_root: Path, s: Settings, log) -> None:
             "If your images are inside subfolders, enable: Include subfolders (recursive)."
         )
 
-    # Dependencies that are needed for ICO work
-    magick = None
+    # ICO expand (optional)
+    magick_for_ico = None
     if s.handle_ico:
-        magick = find_magick()
-        if not magick:
+        magick_for_ico = find_magick()
+        if not magick_for_ico:
             raise RuntimeError("ImageMagick 'magick' not found on PATH (required for ICO extract/rebuild).")
 
-    # Expand ICO inputs into frame PNGs if requested
     ico_map: Dict[str, Dict[str, object]] = {}
     if s.handle_ico:
         expanded: List[Path] = []
@@ -59,22 +54,16 @@ def run_all(input_path: Path, output_root: Path, s: Settings, log) -> None:
 
             for ico in ico_files:
                 frame_dir = ico_stage_dir / ico.stem
-                frames = split_ico_to_pngs(magick, ico, frame_dir)
+                frames = split_ico_to_pngs(magick_for_ico, ico, frame_dir)
                 if not frames:
                     log(f"  WARN: no frames extracted from {ico.name}\n")
                     continue
-
-                # record mapping
-                ico_map[ico.stem] = {
-                    "src": ico,
-                    "frames": frames,
-                }
+                ico_map[ico.stem] = {"src": ico, "frames": frames}
                 expanded.extend(frames)
                 log(f"  {ico.name}: {len(frames)} frame(s)\n")
 
         files = other_files + expanded
 
-    # After ICO expansion, you might still have nothing
     if not files:
         raise RuntimeError("No images to process after ICO extraction. (Were the ICOs valid?)")
 
@@ -94,7 +83,8 @@ def run_all(input_path: Path, output_root: Path, s: Settings, log) -> None:
                 mag, src, dst,
                 s.grayscale, s.auto_level, s.contrast_stretch,
                 s.cs_black, s.cs_white, s.median, s.blur,
-                s.negate, s.do_threshold, s.threshold_pct
+                s.negate,
+                s.preprocess_mode, s.threshold_pct, s.quantize_levels
             )
         files = list_images(d1, recursive=False)
 
@@ -102,13 +92,11 @@ def run_all(input_path: Path, output_root: Path, s: Settings, log) -> None:
     if s.do_pad:
         d2 = output_root / "02_padded"
         d2.mkdir(parents=True, exist_ok=True)
-
         log(f"\n[B] Pad -> {d2}\n")
         for i, src in enumerate(files, 1):
             out_base = d2 / src.stem
             log(f"  [{i}/{len(files)}] {src.name}\n")
             pad_square(src, out_base, s.pad_size, s.pad_bg, s.pad_out_fmt, s.jpeg_quality)
-
         files = list_images(d2, recursive=False)
 
     # C) trace
@@ -119,10 +107,8 @@ def run_all(input_path: Path, output_root: Path, s: Settings, log) -> None:
         potrace = find_potrace()
         if not potrace:
             raise RuntimeError("potrace not found. Put potrace.exe in bin\\ or install potrace.")
-
         d3 = output_root / "03_svg"
         d3.mkdir(parents=True, exist_ok=True)
-
         log(f"\n[C] Trace -> {d3}\n")
         for i, src in enumerate(files, 1):
             dst = d3 / (src.stem + ".svg")
@@ -139,17 +125,15 @@ def run_all(input_path: Path, output_root: Path, s: Settings, log) -> None:
         inkscape = find_inkscape()
         if not inkscape:
             raise RuntimeError("Inkscape not found on PATH (needed for export).")
-
         d4 = output_root / "04_export_png"
         d4.mkdir(parents=True, exist_ok=True)
-
         log(f"\n[D] Export -> {d4}\n")
         for i, svg in enumerate(files, 1):
             dst = d4 / (Path(svg).stem + ".png")
             log(f"  [{i}/{len(files)}] {Path(svg).name}\n")
             export_svg_to_png(inkscape, Path(svg), dst, s.export_width, s.export_area_drawing)
 
-    # Rebuild ICOs if enabled
+    # ICO rebuild (optional)
     if s.handle_ico and ico_map:
         mag = find_magick()
         if not mag:
@@ -163,18 +147,16 @@ def run_all(input_path: Path, output_root: Path, s: Settings, log) -> None:
 
         for stem, info in ico_map.items():
             frames: List[Path] = info["frames"]  # type: ignore
-
-            # Find processed frames by stem in the chosen raster output dir
             processed_frames = []
+
             for fr in frames:
-                candidate = src_raster_dir / (Path(fr).stem + ".png")
-                if candidate.exists():
-                    processed_frames.append(candidate)
-                else:
-                    # if pad output format is jpg, accept that too
-                    candidate_j = src_raster_dir / (Path(fr).stem + ".jpg")
-                    if candidate_j.exists():
-                        processed_frames.append(candidate_j)
+                # prefer png, but allow jpg if user forced it
+                cand_png = src_raster_dir / (Path(fr).stem + ".png")
+                cand_jpg = src_raster_dir / (Path(fr).stem + ".jpg")
+                if cand_png.exists():
+                    processed_frames.append(cand_png)
+                elif cand_jpg.exists():
+                    processed_frames.append(cand_jpg)
 
             if not processed_frames:
                 log(f"  WARN: No processed frames found for {stem}.ico (skipping)\n")

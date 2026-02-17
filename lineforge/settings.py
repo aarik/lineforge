@@ -4,10 +4,12 @@ from dataclasses import dataclass
 class Settings:
     # Input behavior
     input_recursive: bool = False
-    handle_ico: bool = False   # NEW: extract ICO frames and rebuild after processing
+    handle_ico: bool = False
 
     # A) preprocess
     do_preprocess: bool = True
+
+    # Shared preprocess toggles
     grayscale: bool = True
     auto_level: bool = True
     contrast_stretch: bool = True
@@ -16,14 +18,23 @@ class Settings:
     median: int = 1
     blur: float = 0.0
     negate: bool = False
-    do_threshold: bool = False
+
+    # NEW: mutually exclusive preprocess modes
+    # "none" | "threshold" | "quantize"
+    preprocess_mode: str = "none"
+
+    # Threshold mode (B/W)
     threshold_pct: int = 45
+
+    # Quantize mode (grayscale levels)
+    # Typical useful values: 4, 8, 16, 32, 64
+    quantize_levels: int = 16
 
     # B) pad
     do_pad: bool = True
     pad_size: int = 512
     pad_bg: str = "white"
-    pad_out_fmt: str = "png"       # for icons, png is usually safer than jpg
+    pad_out_fmt: str = "png"
     jpeg_quality: int = 95
 
     # C) trace
@@ -31,7 +42,7 @@ class Settings:
     trace_cutoff_pct: int = 45
     trace_invert: bool = False
     potrace_turdsize: int = 8
-    potrace_smooth: bool = True
+    potrace_smooth: bool = True  # uses default smoothing; "off" applies --flat
 
     # D) export
     do_export: bool = True

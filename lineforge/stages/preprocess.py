@@ -17,12 +17,18 @@ def preprocess_magick(
     median: int = 1,
     blur: float = 0.0,
     negate: bool = False,
-    do_threshold: bool = False,
-    threshold_pct: int = 45,
+    mode: str = "none",               # "none" | "threshold" | "quantize"
+    threshold_pct: int = 45,          # used when mode == "threshold"
+    quantize_levels: int = 16,        # used when mode == "quantize"
 ) -> Path:
-    """Preprocess an image via ImageMagick CLI (magick) and write a PNG.
+    """
+    Preprocess an image using ImageMagick CLI (magick).
+    Always writes a PNG to dst.
 
-    Conservative defaults: flatten alpha, strip metadata, then apply UI toggles.
+    Modes:
+      - none: no hard threshold or quantize
+      - threshold: brightness cutoff (2-tone B/W)
+      - quantize: grayscale tone reduction (levels)
     """
     src = Path(src)
     dst = Path(dst)
@@ -34,12 +40,13 @@ def preprocess_magick(
 
     args: list[str] = [magick, str(src)]
 
-    # Remove alpha by flattening against a white background (stable for datasets)
+    # Flatten alpha (avoid transparency artifacts downstream)
     args += ["-background", "white", "-alpha", "remove", "-alpha", "off"]
 
-    # Strip profiles/metadata
+    # Strip metadata
     args += ["-strip"]
 
+    # Work in grayscale when requested (also recommended for quantization)
     if grayscale:
         args += ["-colorspace", "Gray"]
 
@@ -58,10 +65,34 @@ def preprocess_magick(
     if negate:
         args += ["-negate"]
 
-    if do_threshold:
+    # Mutually exclusive "finish" mode
+    mode = (mode or "none").strip().lower()
+
+    if mode == "threshold":
         tp = max(0, min(100, int(threshold_pct)))
         args += ["-threshold", f"{tp}%"]
 
+    elif mode == "quantize":
+        # Quantize grayscale to N levels.
+        # Use -dither None so it doesn't introduce speckled noise.
+        # -colors N reduces to N palette entries.
+        levels = int(quantize_levels)
+        if levels < 2:
+            levels = 2
+        if levels > 256:
+            levels = 256
+
+        # Ensure gray colorspace for predictable output
+        args += ["-colorspace", "Gray"]
+        args += ["-dither", "None"]
+        args += ["-colors", str(levels)]
+
+    elif mode == "none":
+        pass
+    else:
+        raise ValueError(f"Unknown preprocess mode: {mode!r}")
+
+    # Force PNG output
     args += [f"png:{dst}"]
 
     run_cmd(args)
