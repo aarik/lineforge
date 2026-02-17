@@ -2,6 +2,9 @@ from dataclasses import dataclass
 
 @dataclass
 class Settings:
+    # Input behavior
+    input_recursive: bool = False
+
     # A) preprocess
     do_preprocess: bool = True
     grayscale: bool = True
@@ -18,11 +21,11 @@ class Settings:
     # B) pad
     do_pad: bool = True
     pad_size: int = 512
-    pad_bg: str = "white"          # "white" or "black"
-    pad_out_fmt: str = "jpg"       # "jpg" or "png"
+    pad_bg: str = "white"          # white / black / transparent (transparent treated as white unless you add alpha path)
+    pad_out_fmt: str = "jpg"       # jpg or png
     jpeg_quality: int = 95
 
-    # C) trace (potrace)
+    # C) trace
     do_trace: bool = True
     trace_cutoff_pct: int = 45
     trace_invert: bool = False

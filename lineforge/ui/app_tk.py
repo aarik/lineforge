@@ -1,79 +1,12 @@
 import os
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 from pathlib import Path
 from datetime import datetime
 
 from ..settings import Settings
 from ..utils import list_images
-from ..deps import find_magick, find_potrace, find_inkscape
-from ..stages.preprocess import preprocess_magick
-from ..stages.pad import pad_square
-from ..stages.trace import trace_to_svg
-from ..stages.export import export_svg_to_png
-
-
-def run_all(input_path: Path, output_root: Path, s: Settings, log) -> None:
-    """Run A->D in order, using the same logic as the GUI buttons."""
-    files = list_images(input_path)
-    if not files:
-        raise RuntimeError("No supported images found.")
-
-    # A: preprocess
-    if s.do_preprocess:
-        magick = find_magick()
-        if not magick:
-            raise RuntimeError("ImageMagick 'magick' not found on PATH.")
-        d1 = output_root / "01_preprocessed"
-        d1.mkdir(parents=True, exist_ok=True)
-        for src in files:
-            dst = d1 / (src.stem + ".png")
-            preprocess_magick(
-                magick, src, dst,
-                s.grayscale, s.auto_level, s.contrast_stretch,
-                s.cs_black, s.cs_white, s.median, s.blur,
-                s.negate, s.do_threshold, s.threshold_pct
-            )
-        files = list_images(d1)
-
-    # B: pad
-    if s.do_pad:
-        d2 = output_root / "02_padded"
-        d2.mkdir(parents=True, exist_ok=True)
-        for src in files:
-            out_base = d2 / src.stem
-            pad_square(src, out_base, s.pad_size, s.pad_bg, s.pad_out_fmt, s.jpeg_quality)
-        files = list_images(d2)
-
-    # C: trace
-    if s.do_trace:
-        magick = find_magick()
-        if not magick:
-            raise RuntimeError("ImageMagick 'magick' not found on PATH (needed for trace PBM).")
-        potrace = find_potrace()
-        if not potrace:
-            raise RuntimeError("potrace not found. Put potrace.exe in bin\\ or install potrace.")
-        d3 = output_root / "03_svg"
-        d3.mkdir(parents=True, exist_ok=True)
-        for src in files:
-            dst = d3 / (src.stem + ".svg")
-            trace_to_svg(
-                magick, potrace, src, dst,
-                s.trace_cutoff_pct, s.trace_invert,
-                s.potrace_turdsize, s.potrace_smooth
-            )
-        files = sorted(d3.glob("*.svg"))
-
-    # D: export
-    if s.do_export:
-        inkscape = find_inkscape()
-        if not inkscape:
-            raise RuntimeError("Inkscape not found on PATH (needed for export).")
-        d4 = output_root / "04_export_png"
-        d4.mkdir(parents=True, exist_ok=True)
-        for svg in files:
-            dst = d4 / (Path(svg).stem + ".png")
-            export_svg_to_png(inkscape, Path(svg), dst, s.export_width, s.export_area_drawing)
+from ..pipeline import run_all
 
 
 class App(tk.Tk):
@@ -81,238 +14,322 @@ class App(tk.Tk):
         super().__init__()
 
         self.title("LineForge")
-        self.geometry("980x720")
-        self.minsize(900, 650)
+        self.geometry("1040x780")
+        self.minsize(980, 720)
 
         self.s = Settings()
 
-        self.var_in = tk.StringVar(value=str(Path.cwd()))
-        self.var_out = tk.StringVar(value=str(Path.cwd() / "output"))
-
-        self.log_dir = Path.cwd() / "logs"
-        self.log_dir.mkdir(exist_ok=True)
-        self.current_log_file = None
+        self._log_fh = None
+        self._log_path = None
 
         self._build_ui()
+        self.start_new_log_session()
+        self.refresh_found_count()
 
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    # ---------------- UI ----------------
     def _build_ui(self):
-        frm_top = tk.Frame(self)
-        frm_top.pack(fill="x", padx=10, pady=8)
+        top = tk.Frame(self)
+        top.pack(fill="x", padx=10, pady=10)
 
-        tk.Label(frm_top, text="Input folder / file:").grid(row=0, column=0, sticky="w")
-        tk.Entry(frm_top, textvariable=self.var_in, width=80).grid(row=0, column=1, sticky="we", padx=6)
+        # Input
+        tk.Label(top, text="Input (file or folder)").grid(row=0, column=0, sticky="w")
+        self.e_in = tk.Entry(top, width=70)
+        self.e_in.insert(0, str(Path.cwd()))
+        self.e_in.grid(row=0, column=1, padx=6, sticky="we")
+        tk.Button(top, text="Browse File", command=self.browse_input_file).grid(row=0, column=2, padx=(0, 6))
+        tk.Button(top, text="Browse Folder", command=self.browse_input_folder).grid(row=0, column=3)
 
-        tk.Label(frm_top, text="Output folder:").grid(row=1, column=0, sticky="w")
-        tk.Entry(frm_top, textvariable=self.var_out, width=80).grid(row=1, column=1, sticky="we", padx=6)
+        # Output
+        tk.Label(top, text="Output folder").grid(row=1, column=0, sticky="w")
+        self.e_out = tk.Entry(top, width=70)
+        self.e_out.insert(0, str(Path.cwd() / "output"))
+        self.e_out.grid(row=1, column=1, padx=6, sticky="we")
+        tk.Button(top, text="Browse", command=self.browse_output_folder).grid(row=1, column=2, padx=(0, 6), sticky="w")
 
-        frm_top.columnconfigure(1, weight=1)
+        # Recursive + Found count
+        self.v_recursive = tk.BooleanVar(value=self.s.input_recursive)
+        tk.Checkbutton(top, text="Include subfolders (recursive)", variable=self.v_recursive, command=self.refresh_found_count)\
+            .grid(row=2, column=1, sticky="w", padx=6, pady=(6, 0))
 
-        frm_btns = tk.Frame(self)
-        frm_btns.pack(fill="x", padx=10, pady=6)
+        self.lbl_found = tk.Label(top, text="Found: 0 images", anchor="w")
+        self.lbl_found.grid(row=2, column=2, columnspan=2, sticky="w", pady=(6, 0))
 
-        tk.Button(frm_btns, text="A) Preprocess", command=self.run_a, width=18).pack(side="left", padx=4)
-        tk.Button(frm_btns, text="B) Pad", command=self.run_b, width=18).pack(side="left", padx=4)
-        tk.Button(frm_btns, text="C) Trace → SVG", command=self.run_c, width=18).pack(side="left", padx=4)
-        tk.Button(frm_btns, text="D) Export → PNG", command=self.run_d, width=18).pack(side="left", padx=4)
-        tk.Button(frm_btns, text="Run ALL", command=self.run_all_clicked, width=18).pack(side="left", padx=8)
+        top.columnconfigure(1, weight=1)
 
-        frm_info = tk.Frame(self)
-        frm_info.pack(fill="x", padx=10, pady=6)
+        # Controls frame
+        controls = tk.Frame(self)
+        controls.pack(fill="x", padx=10)
 
-        txt = (
-            "Stages:\n"
+        # A) Preprocess controls
+        a = tk.LabelFrame(controls, text="A) Preprocess")
+        a.grid(row=0, column=0, padx=(0, 8), pady=(0, 8), sticky="nsew")
+
+        self.v_do_pre = tk.BooleanVar(value=self.s.do_preprocess)
+        tk.Checkbutton(a, text="Enable", variable=self.v_do_pre).grid(row=0, column=0, sticky="w")
+
+        self.v_gray = tk.BooleanVar(value=self.s.grayscale)
+        self.v_autolvl = tk.BooleanVar(value=self.s.auto_level)
+        self.v_cstretch = tk.BooleanVar(value=self.s.contrast_stretch)
+        self.v_neg = tk.BooleanVar(value=self.s.negate)
+        self.v_doth = tk.BooleanVar(value=self.s.do_threshold)
+
+        tk.Checkbutton(a, text="Grayscale", variable=self.v_gray).grid(row=1, column=0, sticky="w")
+        tk.Checkbutton(a, text="Auto-level", variable=self.v_autolvl).grid(row=2, column=0, sticky="w")
+        tk.Checkbutton(a, text="Contrast-stretch", variable=self.v_cstretch).grid(row=3, column=0, sticky="w")
+        tk.Checkbutton(a, text="Negate", variable=self.v_neg).grid(row=4, column=0, sticky="w")
+        tk.Checkbutton(a, text="Threshold", variable=self.v_doth).grid(row=5, column=0, sticky="w")
+
+        tk.Label(a, text="Threshold %").grid(row=6, column=0, sticky="w")
+        self.v_th = tk.IntVar(value=self.s.threshold_pct)
+        tk.Scale(a, from_=0, to=100, orient="horizontal", variable=self.v_th, length=220).grid(row=7, column=0, sticky="we")
+
+        tk.Label(a, text="Median").grid(row=8, column=0, sticky="w")
+        self.v_med = tk.IntVar(value=self.s.median)
+        tk.Scale(a, from_=0, to=10, orient="horizontal", variable=self.v_med, length=220).grid(row=9, column=0, sticky="we")
+
+        tk.Label(a, text="Blur").grid(row=10, column=0, sticky="w")
+        self.v_blur = tk.DoubleVar(value=self.s.blur)
+        tk.Scale(a, from_=0.0, to=10.0, resolution=0.1, orient="horizontal", variable=self.v_blur, length=220)\
+            .grid(row=11, column=0, sticky="we")
+
+        # B) Pad controls
+        b = tk.LabelFrame(controls, text="B) Pad")
+        b.grid(row=0, column=1, padx=(0, 8), pady=(0, 8), sticky="nsew")
+
+        self.v_do_pad = tk.BooleanVar(value=self.s.do_pad)
+        tk.Checkbutton(b, text="Enable", variable=self.v_do_pad).grid(row=0, column=0, sticky="w")
+
+        tk.Label(b, text="Size").grid(row=1, column=0, sticky="w")
+        self.v_size = tk.IntVar(value=self.s.pad_size)
+        tk.Scale(b, from_=64, to=2048, resolution=64, orient="horizontal", variable=self.v_size, length=260)\
+            .grid(row=2, column=0, sticky="we")
+
+        tk.Label(b, text="Background").grid(row=3, column=0, sticky="w")
+        self.v_bg = tk.StringVar(value=self.s.pad_bg)
+        tk.OptionMenu(b, self.v_bg, "white", "black", "transparent").grid(row=4, column=0, sticky="w")
+
+        tk.Label(b, text="Output format").grid(row=5, column=0, sticky="w")
+        self.v_fmt = tk.StringVar(value=self.s.pad_out_fmt)
+        tk.OptionMenu(b, self.v_fmt, "jpg", "png").grid(row=6, column=0, sticky="w")
+
+        tk.Label(b, text="JPEG quality").grid(row=7, column=0, sticky="w")
+        self.v_q = tk.IntVar(value=self.s.jpeg_quality)
+        tk.Scale(b, from_=50, to=100, orient="horizontal", variable=self.v_q, length=260)\
+            .grid(row=8, column=0, sticky="we")
+
+        # C) Trace controls
+        c = tk.LabelFrame(controls, text="C) Trace → SVG")
+        c.grid(row=0, column=2, padx=(0, 0), pady=(0, 8), sticky="nsew")
+
+        self.v_do_trace = tk.BooleanVar(value=self.s.do_trace)
+        tk.Checkbutton(c, text="Enable", variable=self.v_do_trace).grid(row=0, column=0, sticky="w")
+
+        tk.Label(c, text="Cutoff %").grid(row=1, column=0, sticky="w")
+        self.v_cut = tk.IntVar(value=self.s.trace_cutoff_pct)
+        tk.Scale(c, from_=0, to=100, orient="horizontal", variable=self.v_cut, length=260)\
+            .grid(row=2, column=0, sticky="we")
+
+        self.v_trace_inv = tk.BooleanVar(value=self.s.trace_invert)
+        tk.Checkbutton(c, text="Invert before threshold", variable=self.v_trace_inv).grid(row=3, column=0, sticky="w")
+
+        tk.Label(c, text="Turdsize").grid(row=4, column=0, sticky="w")
+        self.v_turd = tk.IntVar(value=self.s.potrace_turdsize)
+        tk.Scale(c, from_=0, to=50, orient="horizontal", variable=self.v_turd, length=260)\
+            .grid(row=5, column=0, sticky="we")
+
+        self.v_smooth = tk.BooleanVar(value=self.s.potrace_smooth)
+        tk.Checkbutton(c, text="Smooth", variable=self.v_smooth).grid(row=6, column=0, sticky="w")
+
+        # D) Export controls
+        d = tk.LabelFrame(self, text="D) Export → PNG")
+        d.pack(fill="x", padx=10, pady=(0, 8))
+
+        self.v_do_export = tk.BooleanVar(value=self.s.do_export)
+        tk.Checkbutton(d, text="Enable", variable=self.v_do_export).grid(row=0, column=0, sticky="w")
+
+        tk.Label(d, text="Width").grid(row=0, column=1, sticky="w", padx=(12, 0))
+        self.v_w = tk.IntVar(value=self.s.export_width)
+        tk.Scale(d, from_=64, to=4096, resolution=64, orient="horizontal", variable=self.v_w, length=420)\
+            .grid(row=0, column=2, sticky="w", padx=6)
+
+        self.v_area = tk.BooleanVar(value=self.s.export_area_drawing)
+        tk.Checkbutton(d, text="Area: drawing", variable=self.v_area).grid(row=0, column=3, sticky="w", padx=(12, 0))
+
+        # Buttons
+        btn = tk.Frame(self)
+        btn.pack(fill="x", padx=10, pady=(0, 8))
+
+        tk.Button(btn, text="Run ALL (A→D)", command=self.run_all_clicked, width=16).pack(side="left")
+        tk.Button(btn, text="Refresh Found Count", command=self.refresh_found_count, width=18).pack(side="left", padx=6)
+        tk.Button(btn, text="Open output folder", command=self.open_output_folder, width=18).pack(side="left", padx=6)
+        tk.Button(btn, text="Open last log", command=self.open_last_log, width=14).pack(side="left", padx=6)
+        tk.Button(btn, text="Clear log", command=self.clear_log, width=12).pack(side="right")
+
+        # Log box
+        self.txt = tk.Text(self, wrap="word")
+        self.txt.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        self.write(
+            "Outputs:\n"
             "  A -> output\\01_preprocessed\n"
             "  B -> output\\02_padded\n"
             "  C -> output\\03_svg\n"
-            "  D -> output\\04_export_png\n"
+            "  D -> output\\04_export_png\n\n"
         )
-        tk.Label(frm_info, text=txt, justify="left").pack(anchor="w")
 
-        frm_log = tk.Frame(self)
-        frm_log.pack(fill="both", expand=True, padx=10, pady=8)
+    # ---------------- browse ----------------
+    def browse_input_file(self):
+        p = filedialog.askopenfilename(
+            title="Select an input image file",
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff"), ("All files", "*.*")],
+        )
+        if p:
+            self.e_in.delete(0, "end")
+            self.e_in.insert(0, p)
+            self.refresh_found_count()
 
-        self.txt_log = tk.Text(frm_log, wrap="word")
-        self.txt_log.pack(side="left", fill="both", expand=True)
+    def browse_input_folder(self):
+        p = filedialog.askdirectory(title="Select an input folder")
+        if p:
+            self.e_in.delete(0, "end")
+            self.e_in.insert(0, p)
+            self.refresh_found_count()
 
-        scroll = tk.Scrollbar(frm_log, command=self.txt_log.yview)
-        scroll.pack(side="right", fill="y")
-        self.txt_log.configure(yscrollcommand=scroll.set)
+    def browse_output_folder(self):
+        p = filedialog.askdirectory(title="Select an output folder")
+        if p:
+            self.e_out.delete(0, "end")
+            self.e_out.insert(0, p)
 
-        frm_bottom = tk.Frame(self)
-        frm_bottom.pack(fill="x", padx=10, pady=8)
+    # ---------------- logging ----------------
+    def start_new_log_session(self):
+        self.close_log_session()
+        logs = Path.cwd() / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._log_path = logs / f"lineforge_{stamp}.log"
+        self._log_fh = open(self._log_path, "a", encoding="utf-8")
+        self.write(f"--- Log: {self._log_path} ---\n")
 
-        tk.Button(frm_bottom, text="Quit", command=self.quit_app, width=12).pack(side="right")
+    def close_log_session(self):
+        try:
+            if self._log_fh:
+                self._log_fh.flush()
+                self._log_fh.close()
+        except Exception:
+            pass
+        self._log_fh = None
+
+    def write(self, msg: str):
+        self.txt.insert("end", msg)
+        self.txt.see("end")
+        self.update_idletasks()
+        try:
+            if self._log_fh:
+                self._log_fh.write(msg)
+                self._log_fh.flush()
+        except Exception:
+            pass
+
+    def clear_log(self):
+        self.txt.delete("1.0", "end")
+
+    # ---------------- helpers ----------------
+    def sync(self):
+        # input
+        self.s.input_recursive = bool(self.v_recursive.get())
+
+        # stage enables
+        self.s.do_preprocess = bool(self.v_do_pre.get())
+        self.s.do_pad = bool(self.v_do_pad.get())
+        self.s.do_trace = bool(self.v_do_trace.get())
+        self.s.do_export = bool(self.v_do_export.get())
+
+        # preprocess
+        self.s.grayscale = bool(self.v_gray.get())
+        self.s.auto_level = bool(self.v_autolvl.get())
+        self.s.contrast_stretch = bool(self.v_cstretch.get())
+        self.s.negate = bool(self.v_neg.get())
+        self.s.do_threshold = bool(self.v_doth.get())
+        self.s.threshold_pct = int(self.v_th.get())
+        self.s.median = int(self.v_med.get())
+        self.s.blur = float(self.v_blur.get())
+
+        # pad
+        self.s.pad_size = int(self.v_size.get())
+        self.s.pad_bg = self.v_bg.get().strip().lower()
+        self.s.pad_out_fmt = self.v_fmt.get().strip().lower()
+        self.s.jpeg_quality = int(self.v_q.get())
+
+        # trace
+        self.s.trace_cutoff_pct = int(self.v_cut.get())
+        self.s.trace_invert = bool(self.v_trace_inv.get())
+        self.s.potrace_turdsize = int(self.v_turd.get())
+        self.s.potrace_smooth = bool(self.v_smooth.get())
+
+        # export
+        self.s.export_width = int(self.v_w.get())
+        self.s.export_area_drawing = bool(self.v_area.get())
 
     def paths(self):
-        inp = Path(self.var_in.get()).expanduser()
-        out = Path(self.var_out.get()).expanduser()
+        inp = Path(self.e_in.get().strip())
+        out = Path(self.e_out.get().strip())
+        if not inp.exists():
+            raise FileNotFoundError(f"Input path not found: {inp}")
         out.mkdir(parents=True, exist_ok=True)
         return inp, out
 
-    def write(self, msg: str):
-        self.txt_log.insert("end", msg)
-        self.txt_log.see("end")
-        self.txt_log.update_idletasks()
-        if self.current_log_file:
-            with open(self.current_log_file, "a", encoding="utf-8") as f:
-                f.write(msg)
+    def refresh_found_count(self):
+        try:
+            inp = Path(self.e_in.get().strip())
+            recursive = bool(self.v_recursive.get())
+            files = list_images(inp, recursive=recursive)
+            self.lbl_found.config(text=f"Found: {len(files)} images" + (" (recursive)" if recursive else ""))
+        except Exception:
+            self.lbl_found.config(text="Found: ? images")
 
-    def start_new_log_session(self):
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.current_log_file = str(self.log_dir / f"lineforge_{ts}.log")
-        self.write(f"\n--- Log session: {self.current_log_file} ---\n")
+    def open_output_folder(self):
+        try:
+            out = Path(self.e_out.get().strip()).resolve()
+            out.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(out))
+        except Exception as e:
+            messagebox.showerror("Open output folder failed", str(e))
 
-    def close_log_session(self):
-        self.current_log_file = None
+    def open_last_log(self):
+        try:
+            if self._log_path and self._log_path.exists():
+                os.startfile(str(self._log_path.resolve()))
+                return
+            logs = Path.cwd() / "logs"
+            ls = sorted(logs.glob("lineforge_*.log"))
+            if ls:
+                os.startfile(str(ls[-1].resolve()))
+            else:
+                messagebox.showinfo("Open last log", "No log files found.")
+        except Exception as e:
+            messagebox.showerror("Open last log failed", str(e))
 
-    def quit_app(self):
+    def on_close(self):
         self.close_log_session()
         self.destroy()
 
-    # ---------- stage runners ----------
-    def run_a(self):
-        self.start_new_log_session()
-        self.sync()
-        inp, out = self.paths()
-
-        files = list_images(inp)
-        if not files:
-            self.write("No supported images found.\n")
-            return
-
-        magick = find_magick()
-        if not magick:
-            messagebox.showerror("Missing dependency", "ImageMagick 'magick' not found on PATH.")
-            return
-
-        d = out / "01_preprocessed"
-        d.mkdir(parents=True, exist_ok=True)
-        self.write(f"\n[A] Preprocess -> {d}\n")
-
-        for i, src in enumerate(files, 1):
-            try:
-                dst = d / (src.stem + ".png")
-                preprocess_magick(
-                    magick, src, dst,
-                    self.s.grayscale, self.s.auto_level, self.s.contrast_stretch,
-                    self.s.cs_black, self.s.cs_white, self.s.median, self.s.blur,
-                    self.s.negate, self.s.do_threshold, self.s.threshold_pct
-                )
-                self.write(f"  [{i}/{len(files)}] {src.name} -> {dst.name}\n")
-            except Exception as e:
-                self.write(f"  FAIL: {src.name}: {e}\n")
-                return
-
-        self.write("[A] Done.\n")
-
-    def run_b(self):
-        self.start_new_log_session()
-        self.sync()
-        inp, out = self.paths()
-
-        src_dir = out / "01_preprocessed"
-        files = list_images(src_dir) if src_dir.exists() else list_images(inp)
-        if not files:
-            self.write("No supported images found.\n")
-            return
-
-        d = out / "02_padded"
-        d.mkdir(parents=True, exist_ok=True)
-        self.write(f"\n[B] Pad -> {d}\n")
-
-        for i, src in enumerate(files, 1):
-            try:
-                out_base = d / src.stem
-                dst = pad_square(
-                    src, out_base,
-                    self.s.pad_size, self.s.pad_bg,
-                    self.s.pad_out_fmt, self.s.jpeg_quality
-                )
-                self.write(f"  [{i}/{len(files)}] {src.name} -> {dst.name}\n")
-            except Exception as e:
-                self.write(f"  FAIL: {src.name}: {e}\n")
-                return
-
-        self.write("[B] Done.\n")
-
-    def run_c(self):
-        self.start_new_log_session()
-        self.sync()
-        inp, out = self.paths()
-
-        src_dir = out / "02_padded"
-        files = list_images(src_dir) if src_dir.exists() else list_images(inp)
-        if not files:
-            self.write("No supported images found to trace. Run B first.\n")
-            return
-
-        magick = find_magick()
-        if not magick:
-            messagebox.showerror("Missing dependency", "ImageMagick 'magick' not found on PATH (needed for trace PBM).")
-            return
-
-        potrace = find_potrace()
-        if not potrace:
-            messagebox.showerror("Missing dependency", "potrace not found. Put potrace.exe in bin\\ or install potrace.")
-            return
-
-        d = out / "03_svg"
-        d.mkdir(parents=True, exist_ok=True)
-        self.write(f"\n[C] Trace -> {d}\n")
-
-        for i, src in enumerate(files, 1):
-            try:
-                dst = d / (src.stem + ".svg")
-                trace_to_svg(
-                    magick, potrace, src, dst,
-                    self.s.trace_cutoff_pct, self.s.trace_invert,
-                    self.s.potrace_turdsize, self.s.potrace_smooth
-                )
-                self.write(f"  [{i}/{len(files)}] {src.name} -> {dst.name}\n")
-            except Exception as e:
-                self.write(f"  FAIL: {src.name}: {e}\n")
-                return
-
-        self.write("[C] Done.\n")
-
-    def run_d(self):
-        self.start_new_log_session()
-        self.sync()
-        _, out = self.paths()
-
-        src_dir = out / "03_svg"
-        svgs = sorted(p for p in src_dir.glob("*.svg")) if src_dir.exists() else []
-        if not svgs:
-            self.write("No SVGs found. Run C first.\n")
-            return
-
-        inkscape = find_inkscape()
-        if not inkscape:
-            messagebox.showerror("Missing dependency", "Inkscape not found on PATH (needed for export).")
-            return
-
-        d = out / "04_export_png"
-        d.mkdir(parents=True, exist_ok=True)
-        self.write(f"\n[D] Export -> {d}\n")
-
-        for i, svg in enumerate(svgs, 1):
-            try:
-                dst = d / (svg.stem + ".png")
-                export_svg_to_png(inkscape, svg, dst, self.s.export_width, self.s.export_area_drawing)
-                self.write(f"  [{i}/{len(svgs)}] {svg.name} -> {dst.name}\n")
-            except Exception as e:
-                self.write(f"  FAIL: {svg.name}: {e}\n")
-                return
-
-        self.write("[D] Done.\n")
-
+    # ---------------- run ----------------
     def run_all_clicked(self):
         self.start_new_log_session()
         self.sync()
-        inp, out = self.paths()
+
         try:
+            inp, out = self.paths()
+            self.refresh_found_count()
+
             self.write("\nRunning ALL stages...\n")
             run_all(inp, out, self.s, self.write)
-            self.write("\nALL DONE.\n")
+            self.write("\nDONE.\n")
+            self.open_output_folder()
+
         except Exception as e:
-            self.write(f"\nALL FAILED: {e}\n")
+            self.write(f"\nFAILED: {e}\n")
+            messagebox.showerror("Run failed", str(e))
